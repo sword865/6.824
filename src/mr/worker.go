@@ -46,9 +46,10 @@ func hashToPartition(s string, value int) uint32 {
 
 func runMapStage(mapf func(string, string) []KeyValue) {
 	lastTaskUUID := ""
+	lastTaskNo := -1
 	lastJobStatus := TaskUnKnow
 	for {
-		task := RequestJob(MapTask, lastTaskUUID, lastJobStatus)
+		task := RequestJob(MapTask, lastTaskUUID, lastJobStatus, lastTaskNo)
 		if task.TaskType == MapTask {
 			result := map[uint32][]KeyValue{}
 			for _, fileName := range task.FileNames {
@@ -80,9 +81,11 @@ func runMapStage(mapf func(string, string) []KeyValue) {
 			}
 			lastTaskUUID = task.TaskUUID
 			lastJobStatus = TaskSuccess
+			lastTaskNo = task.TaskNo
 			// fmt.Printf("Map Task %s finished\n", task.TaskUUID)
 		} else if task.TaskType == WaitTask {
 			lastTaskUUID = ""
+			lastTaskNo = -1
 			lastJobStatus = TaskSuccess
 			time.Sleep(time.Second)
 		} else if task.TaskType == FinishTask {
@@ -95,9 +98,10 @@ func runMapStage(mapf func(string, string) []KeyValue) {
 
 func runReduceStage(reducef func(string, []string) string) {
 	lastTaskUUID := ""
+	lastTaskNo := -1
 	lastJobStatus := TaskUnKnow
 	for {
-		task := RequestJob(ReduceTask, lastTaskUUID, lastJobStatus)
+		task := RequestJob(ReduceTask, lastTaskUUID, lastJobStatus, lastTaskNo)
 		if task.TaskType == ReduceTask {
 			if len(task.FileNames) == 0 {
 				fmt.Printf("empty reduce job: %s\n", task.TaskUUID)
@@ -146,10 +150,12 @@ func runReduceStage(reducef func(string, []string) string) {
 			}
 			lastTaskUUID = task.TaskUUID
 			lastJobStatus = TaskSuccess
+			lastTaskNo = task.TaskNo
 			// fmt.Printf("Reduce Task %s finished\n", task.TaskUUID)
 		} else if task.TaskType == WaitTask {
 			lastTaskUUID = ""
 			lastJobStatus = TaskSuccess
+			lastTaskNo = -1
 		} else if task.TaskType == FinishTask {
 			break
 		} else {
@@ -180,10 +186,10 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func RequestJob(taskType int, lastTaskUUID string, lastJobStatus int) JobRequestReply {
+func RequestJob(taskType int, lastTaskUUID string, lastJobStatus int, lastTaskNo int) JobRequestReply {
 
 	// declare an argument structure.
-	args := JobRequestArgs{TaskType: taskType, LastTaskUUID: lastTaskUUID, LastTaskStatus: lastJobStatus}
+	args := JobRequestArgs{TaskType: taskType, LastTaskNo: lastTaskNo, LastTaskUUID: lastTaskUUID, LastTaskStatus: lastJobStatus}
 
 	// fill in the argument(s).
 
@@ -203,7 +209,7 @@ func RequestJob(taskType int, lastTaskUUID string, lastJobStatus int) JobRequest
 			if len(reply.FileNames) > 0 {
 				reduceIdx = strings.Split(strings.Split(reply.FileNames[0], ".")[0], "_")[1]
 			}
-			fmt.Printf("process reduce files %s\n", reduceIdx)
+			fmt.Printf("process reduce index %s\n", reduceIdx)
 		}
 	} else {
 		fmt.Printf("call failed!\n")

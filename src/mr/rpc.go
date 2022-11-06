@@ -30,6 +30,7 @@ const (
 
 type JobRequestArgs struct {
 	TaskType       int
+	LastTaskNo     int
 	LastTaskUUID   string
 	LastTaskStatus int
 }
@@ -38,6 +39,7 @@ type JobRequestReply struct {
 	FileNames []string
 	ReduceNum int
 	TaskType  int
+	TaskNo    int
 	TaskUUID  string
 }
 

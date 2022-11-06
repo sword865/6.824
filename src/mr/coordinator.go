@@ -10,25 +10,33 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
+
+type TaskRunInfo struct {
+	StartTime int64
+	EndTime   int64
+	TaskUUID  string
+	TaskNo    int
+}
+
+type MapTaskRunInfo struct {
+	TaskRunInfo
+	File string
+}
+
+type ReduceTaskRunInfo struct {
+	TaskRunInfo
+	Partition int
+}
 
 type Coordinator struct {
 	// Your definitions here.
-	files []string
+	mapTaskInfos []MapTaskRunInfo
 
-	reduceNum int
-
-	mapStep int
-
-	mapFinishCount int
-
-	reduceStep int
-
-	reduceFinishCount int
+	reduceTaskInfos []ReduceTaskRunInfo
 
 	mutex sync.Mutex
-
-	mapTasks []string
 }
 
 func uuidGen() string {
@@ -49,22 +57,32 @@ func uuidGen() string {
 func (c *Coordinator) JobRequest(args *JobRequestArgs, reply *JobRequestReply) error {
 	if args.TaskType == MapTask {
 		c.mutex.Lock()
-		if len(args.LastTaskUUID) > 0 && args.LastTaskStatus == TaskSuccess {
-			c.mapFinishCount = c.mapFinishCount + 1
-			if c.mapFinishCount == len(c.files) {
-				fmt.Printf("All [%v] Map Task Finished!\n", len(c.mapTasks))
+		if args.LastTaskNo >= 0 && args.LastTaskUUID == c.mapTaskInfos[args.LastTaskNo].TaskUUID {
+			c.mapTaskInfos[args.LastTaskNo].EndTime = time.Now().Unix()
+		}
+		finishTaskNum := 0
+		for _, task := range c.mapTaskInfos {
+			// fmt.Printf("task :%v, start: %v, end: %v\n", task.TaskNo, task.StartTime, task.EndTime)
+			if task.StartTime > 0 && task.EndTime >= task.StartTime {
+				finishTaskNum = finishTaskNum + 1
+			}
+			// task not started or task timeout
+			timeNow := time.Now().Unix()
+			if task.StartTime < 0 || (task.EndTime < 0 && (timeNow-task.StartTime) > 5) {
+				// fmt.Printf("task :%v, start %v, end: %v, now: %v\n", task.TaskNo, task.StartTime, task.EndTime, timeNow)
+				reply.FileNames = []string{task.File}
+				reply.TaskType = MapTask
+				reply.ReduceNum = len(c.reduceTaskInfos)
+				reply.TaskNo = task.TaskNo
+				reply.TaskUUID = uuidGen()
+				c.mapTaskInfos[task.TaskNo].TaskUUID = reply.TaskUUID
+				c.mapTaskInfos[task.TaskNo].StartTime = timeNow
+				break
 			}
 		}
-		if c.mapFinishCount == len(c.files) {
-			reply.TaskType = FinishTask
-		} else {
-			if c.mapStep < len(c.files) {
-				reply.FileNames = []string{c.files[c.mapStep]}
-				reply.TaskType = MapTask
-				reply.ReduceNum = c.reduceNum
-				reply.TaskUUID = uuidGen()
-				c.mapTasks = append(c.mapTasks, reply.TaskUUID)
-				c.mapStep = c.mapStep + 1
+		if len(reply.TaskUUID) == 0 {
+			if finishTaskNum == len(c.mapTaskInfos) {
+				reply.TaskType = FinishTask
 			} else {
 				reply.TaskType = WaitTask
 			}
@@ -72,25 +90,34 @@ func (c *Coordinator) JobRequest(args *JobRequestArgs, reply *JobRequestReply) e
 		c.mutex.Unlock()
 	} else if args.TaskType == ReduceTask {
 		c.mutex.Lock()
-		if len(args.LastTaskUUID) > 0 && args.LastTaskStatus == TaskSuccess {
-			c.reduceFinishCount = c.reduceFinishCount + 1
-			if c.reduceFinishCount == c.reduceNum {
-				fmt.Printf("All [%v] Reduce Task Finished!\n", c.reduceFinishCount)
-			}
+		if args.LastTaskNo >= 0 && args.LastTaskUUID == c.reduceTaskInfos[args.LastTaskNo].TaskUUID {
+			c.reduceTaskInfos[args.LastTaskNo].EndTime = time.Now().Unix()
 		}
-		if c.reduceFinishCount == c.reduceNum {
-			reply.TaskType = FinishTask
-		} else {
-			if c.reduceStep < c.reduceNum {
+		finishTaskNum := 0
+		for _, task := range c.reduceTaskInfos {
+			if task.StartTime > 0 && task.EndTime >= task.StartTime {
+				finishTaskNum = finishTaskNum + 1
+			}
+			// task not started or task timeout
+			timeNow := time.Now().Unix()
+			if task.StartTime < 0 || (task.EndTime < 0 && (timeNow-task.StartTime) > 5) {
 				reply.FileNames = []string{}
-				for _, taskUUID := range c.mapTasks {
-					outFileName := fmt.Sprintf("%s_%v.json", taskUUID, c.reduceStep)
+				for _, mapTask := range c.mapTaskInfos {
+					outFileName := fmt.Sprintf("%s_%v.json", mapTask.TaskUUID, task.TaskNo)
 					reply.FileNames = append(reply.FileNames, outFileName)
 				}
-				reply.ReduceNum = c.reduceNum
 				reply.TaskType = ReduceTask
+				reply.ReduceNum = len(c.reduceTaskInfos)
+				reply.TaskNo = task.TaskNo
 				reply.TaskUUID = uuidGen()
-				c.reduceStep = c.reduceStep + 1
+				c.reduceTaskInfos[task.TaskNo].TaskUUID = reply.TaskUUID
+				c.reduceTaskInfos[task.TaskNo].StartTime = timeNow
+				break
+			}
+		}
+		if len(reply.TaskUUID) == 0 {
+			if finishTaskNum == len(c.reduceTaskInfos) {
+				reply.TaskType = FinishTask
 			} else {
 				reply.TaskType = WaitTask
 			}
@@ -122,12 +149,14 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
+	ret := true
 
 	// Your code here.
 	c.mutex.Lock()
-	if c.reduceFinishCount == c.reduceNum {
-		ret = true
+	for _, task := range c.reduceTaskInfos {
+		if task.EndTime < 0 {
+			ret = false
+		}
 	}
 	c.mutex.Unlock()
 	return ret
@@ -142,13 +171,26 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-	c.files = files
-	c.reduceNum = nReduce
-	c.mapStep = 0
-	c.reduceStep = 0
-	c.mapTasks = []string{}
-	c.reduceFinishCount = 0
+	// c.files = files
+	c.mapTaskInfos = []MapTaskRunInfo{}
+	for i := 0; i < len(files); i++ {
+		task := MapTaskRunInfo{}
+		task.StartTime = -1
+		task.EndTime = -1
+		task.TaskNo = i
+		task.File = files[i]
+		c.mapTaskInfos = append(c.mapTaskInfos, task)
+	}
 
+	c.reduceTaskInfos = []ReduceTaskRunInfo{}
+	for i := 0; i < nReduce; i++ {
+		task := ReduceTaskRunInfo{}
+		task.StartTime = -1
+		task.EndTime = -1
+		task.Partition = i
+		task.TaskNo = i
+		c.reduceTaskInfos = append(c.reduceTaskInfos, task)
+	}
 	c.server()
 	return &c
 }
